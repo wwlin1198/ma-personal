@@ -263,35 +263,35 @@ class PredatorPrey(gym.Env):
                 print("agent_i is: {} and action is: {}".format(action, agent_i))
                 self.__update_agent_pos(agent_i, action)
 
-        # for prey_i in range(self.n_preys):
-        #     if self._prey_alive[prey_i]:
-        #         predator_neighbour_count, n_i = self._neighbour_agents(self.prey_pos[prey_i])
+        for prey_i in range(self.n_preys):
+            if self._prey_alive[prey_i]:
+                predator_neighbour_count, n_i = self._neighbour_agents(self.prey_pos[prey_i])
 
-        #         if predator_neighbour_count >= 1:
-        #             _reward = self._penalty if predator_neighbour_count == 1 else self._prey_capture_reward
-        #             self._prey_alive[prey_i] = (predator_neighbour_count == 1)
+                if predator_neighbour_count >= 1:
+                    _reward = self._penalty if predator_neighbour_count == 1 else self._prey_capture_reward
+                    self._prey_alive[prey_i] = (predator_neighbour_count == 1)
 
-        #             for agent_i in range(self.n_agents):
-        #                 rewards[agent_i] += _reward
+                    for agent_i in range(self.n_agents):
+                        rewards[agent_i] += _reward
 
-        #         prey_move = None
-        #         if self._prey_alive[prey_i]:
-        #             # 5 trails : we sample next move and check if prey (smart) doesn't go in neighbourhood of predator
-        #             for _ in range(5):
-        #                 _move = self.np_random.choice(len(self._prey_move_probs), 1, p=self._prey_move_probs)[0]
-        #                 if self._neighbour_agents(self.__next_pos(self.prey_pos[prey_i], _move))[0] == 0:
-        #                     prey_move = _move
-        #                     break
-        #             prey_move = 4 if prey_move is None else prey_move  # default is no-op(4)
+                prey_move = None
+                if self._prey_alive[prey_i]:
+                    # 5 trails : we sample next move and check if prey (smart) doesn't go in neighbourhood of predator
+                    for _ in range(5):
+                        _move = self.np_random.choice(len(self._prey_move_probs), 1, p=self._prey_move_probs)[0]
+                        if self._neighbour_agents(self.__next_pos(self.prey_pos[prey_i], _move))[0] == 0:
+                            prey_move = _move
+                            break
+                    prey_move = 4 if prey_move is None else prey_move  # default is no-op(4)
 
-        #         self.__update_prey_pos(prey_i, prey_move)
+                self.__update_prey_pos(prey_i, prey_move)
 
-        # if (self._step_count >= self._max_steps) or (True not in self._prey_alive):
-        #     for i in range(self.n_agents):
-        #         self._agent_dones[i] = True
+        if (self._step_count >= self._max_steps) or (True not in self._prey_alive):
+            for i in range(self.n_agents):
+                self._agent_dones[i] = True
 
-        # for i in range(self.n_agents):
-        #     self._total_episode_reward[i] += rewards[i]
+        for i in range(self.n_agents):
+            self._total_episode_reward[i] += rewards[i]
 
         return self.get_agent_obs(), rewards, self._agent_dones, {'prey_alive': self._prey_alive}
 
