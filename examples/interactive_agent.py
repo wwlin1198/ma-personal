@@ -27,6 +27,7 @@ if __name__ == '__main__':
             action_n = [int(_) for _ in input('Action:')]
             obs_n, reward_n, done_n, _ = env.step(action_n)
             ep_reward += sum(reward_n)
+            env.update_agent_color(action_n)
             env.render()
 
         print('Episode #{} Reward: {}'.format(ep_i, ep_reward))

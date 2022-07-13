@@ -15,15 +15,15 @@ from ..utils.replay_buffer import ReplayBuffer
 from ..utils.deep_q_network import DeepQNetwork
 
 """
-Satellite environment involve a grid world, in which multiple satellite attempt to observe different rocks or region of rocks.The goal is to slew the main satellite (mothership) towards the direction of the rocks so they are in the observable range for data collection and maximize data collection while maintaining battery and memory levels. In this environment, the satellite is constantly going up and will reset itself once it hits the top and moves over 3 columns until it hits [0,19] in which the episode ends. 
+Satellite environment involve a grid world, in which multiple satellite attempt to observe different rocks or region of rocks.The goal is to slew the main satellite (mothership) towards the direction of the rocks so they are in the observable range for data collection and maximize data collection while maintaining battery and memory levels. In this environment, the satellite is constantly going up and will reset itself once it hits the top and moves over 3 columns until it hits [0,19] or hits max_steps in which the episode ends. 
 
 LIMITATIONS OF AGENT/S:
 - Agent/s is not allowed to move more than three units to the left or right before the reset happens
-- Agent/s must charge once the battery is depleted which takes three time steps
+- Agent/s must charge once the battery is depleted which takes three time steps or recieve a negative reward
 - Agent/s must also dump memory every time the memory level is equal to 3
 
 
-Agent/s can select one of the actions in the action_space ∈ {Up (No-op), Left, Right}. The agent is always moving up to represent "floating".
+Agent/s can select one of the actions in the action_space ∈ {Charge (No-op), Left, Right, Observe, Downlink}. The agent is always moving up to represent "floating".
 
 Each agent's observation includes its:
     - Agent ID 
@@ -35,23 +35,14 @@ Each agent's observation includes its:
                        Fully Observed = 3 (Takes 3 steps)|
 
 ------------------------------------------------------------------------------------------------------------------------------
-HOW TO DO TELE-OP 
-_______________________
-Run interactive_agent.py
-Control Using:
-0: NO-OP
-1: LEFT 
-2: UP
-3: RIGHT
-------------------------------------------------------------------------------------------------------------------------------
 
 ACTION SPACE:
 ------------------------------------------------------------------------------------------------------------------------------
 
-{observe, observe and move left, observe and move right, move left, move right, dump, charge }
+{observe (collect data), move left, move right, downlink, charge }
 
                                                     Shortened to:
-{O, OL, OR, L, R, D, C}
+{O, L, R, D, C}
 
 ------------------------------------------------------------------------------------------------------------------------------
 Only the agents who are involved in observation recieve a reward.
@@ -78,7 +69,7 @@ class Satellites2(gym.Env):
 
     metadata = {'render.modes': ['human', 'rgb_array']} #must be human so it is readable data by humans
 
-    def __init__(self, grid_shape=(20, 20), n_agents=1, n_rocks=10, full_observable=False, max_steps=100, 
+    def __init__(self, grid_shape=(20, 20), n_agents=1, n_rocks=10, full_observable=False, max_steps=200, 
                  agent_view_mask=(20, 20)):
         ############# PARAMS #################
         self.alpha          = 0.001 
@@ -87,17 +78,18 @@ class Satellites2(gym.Env):
         self.epsilon        = 1
         self.eps_min        = 0.01
         self.eps_dec        = 1e-5
-        self.replace        = 1000
         self.lr             = 0.001
         self.input_dims     = [405]
-        self.n_actions      = 7
+        self.n_actions      = 5
         self.mem_size       = 10000
-        self.batch_size     = 512
+        self.batch_size     = 64
         self.mem_cntr       = 0
         self.replace        = 1000
         self.iter_cntr      = 0
+
         self.learn_step_counter = 0
         self.replace_target_cnt = self.replace
+        self.observation_cntr   = 0
 
         self.env_name       = "satellite2"
         self.algo           = ""
@@ -105,23 +97,34 @@ class Satellites2(gym.Env):
 
         ############# PARAMS #################
 
-        ###########  For DQN ############
+        ###########  For DQN Networks ############
         self.memory = ReplayBuffer(self.mem_size, self.input_dims, self.n_actions)
 
 
         self.q_eval = DeepQNetwork(self.lr, n_actions=self.n_actions,
                                    input_dims=self.input_dims,
                                    fc1_dims=512, fc2_dims=512)
-        ###########  For DQN ############
+        ###########  For DQN Networks ############
+
         self._grid_shape = grid_shape
         self.n_agents = n_agents
         self.n_rocks = n_rocks
         self._max_steps = max_steps
         self._step_count = None
         self._agent_view_mask = agent_view_mask
+        self.charging = False
+
+        self.left_barrier = 1
+        self.right_barrier = 1
+
+        self.AGENT_COLOR = ImageColor.getcolor("gray", mode='RGB')
+        self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("gray", mode='RGB')
+        self.ROCK_COLOR = ImageColor.getcolor("orange", mode='RGB')
+
         self._init_agent_pos = {_: None for _ in range(self.n_agents)}
 
-        self.action_space = MultiAgentActionSpace([spaces.Discrete(7) for _ in range(self.n_agents)])
+        self.action_space = MultiAgentActionSpace([spaces.Discrete(5) for _ in range(self.n_agents)])
+
         self.agent_pos = {_: None for _ in range(self.n_agents)}
         self.rocks_pos = {_: None for _ in range(self.n_rocks)}
 
@@ -162,7 +165,7 @@ class Satellites2(gym.Env):
         else:
             return [[ACTION_MEANING[i] for i in range(ac.n)] for ac in self.action_space]
 
-    def sample_action_space(self): # only for RL  
+    def sample_action_space(self): # only for eps-greedy action selection  
         return [agent_action_space.sample() for agent_action_space in self.action_space]
 
     def __draw_base_img(self): # draws empty grid
@@ -182,7 +185,7 @@ class Satellites2(gym.Env):
             while True:
                 # pos = [self.np_random.randint(0, self._grid_shape[0] - 1), #for multiple agents
                 # self.np_random.randint(0, self._grid_shape[1] - 1)]
-                pos = [self._grid_shape[0] - 4,1] # for one agent
+                pos = [self._grid_shape[0] - 2,1] #for one agent
                 if self._is_cell_vacant(pos):
                     self.agent_pos[agent_i] = pos
                     self._init_agent_pos = pos
@@ -193,9 +196,9 @@ class Satellites2(gym.Env):
             while True:
                 pos = [self.np_random.randint(2, self._grid_shape[0] - 1), #leave space for satellite to respawn
                     self.np_random.randint(2, self._grid_shape[1] - 1)]
-                if self._is_cell_vacant(pos) and (self._neighbor_agents(pos)[0] == 0 and pos[1] % 3 == 0):#dont spawn same place as agent
-                    self.rock_pos[rock_i] = pos
-                    break
+                # if self._is_cell_vacant(pos) and (self._neighbor_agents(pos)[0] == 0 and pos[1] % 3 == 0):#dont spawn same place as agent
+                self.rock_pos[rock_i] = pos
+                break
             self.__update_rock_view(rock_i)
 
         self.__draw_base_img()
@@ -206,11 +209,10 @@ class Satellites2(gym.Env):
         Purpose  : 
     """
     def get_agent_obs(self):
-        print("Getting Agent Obs")
         _obs = []
         for agent_i in range(self.n_agents):
             pos = self.agent_pos[agent_i]
-            print("Agent Pos: {}".format(pos))
+            # print("Agent Pos: {}".format(pos))
             battery_level = self.agent_battery[agent_i]
             memory_level = self.agent_memory[agent_i]
 
@@ -231,20 +233,16 @@ class Satellites2(gym.Env):
 
             _obs.append(_agent_i_obs)
 
-            # print("Obs {}".format(_obs))
-
-
         if self.full_observable:
             _obs = np.array(_obs).flatten().tolist() # flatten to np array 
             _obs = [_obs for _ in range(self.n_agents)]
-        # _obs = tuple(map(tuple, _obs)) #convert to tuple
-        
         return _obs
 
     def reset(self):
         self._total_episode_reward = [0 for _ in range(self.n_agents)]
         self.agent_pos = {}
         self.rock_pos = {}
+        self.observation_cntr = 0
 
         self.__init_map()
         self._step_count = 0
@@ -252,74 +250,46 @@ class Satellites2(gym.Env):
 
         return self.get_agent_obs()
 
-    # def __wall_exists(self, pos): #was in example env so ported over in case
-    #     row, col = pos
-    #     return PRE_IDS['wall'] in self._base_grid[row, col]
-
     def is_valid(self, pos):
         return (0 <= pos[0] < self._grid_shape[0]) and (0 <= pos[1] < self._grid_shape[1])
 
     def _is_cell_vacant(self, pos):
-        return self.is_valid(pos) and (self._full_obs[pos[0]][pos[1]] == PRE_IDS['empty'])
-
-    # def __next_pos(self, curr_pos, move):
-
-    #     moves = {
-    #         0: [curr_pos[0] - 1, curr_pos[1]],     # Observe
-    #         1: [curr_pos[0] - 1, curr_pos[1] - 1], # Observe left
-    #         2: [curr_pos[0] - 1, curr_pos[1] + 1], # Observe right
-
-       
-    #         3: [curr_pos[0] - 1, curr_pos[1] - 1], # move left
-    #         4: [curr_pos[0] - 1, curr_pos[1] + 1], # move right
-
-    #         5: [curr_pos[0] - 1, curr_pos[1]],     # Charge
-    #         6: [curr_pos[0] - 1, curr_pos[1]],     # Dump no-op
-    #     }
-
-    #     next_pos = moves[move]
-
-    #     return next_pos
+        return self.is_valid(pos) and (self._full_obs[pos[0]][pos[1]] == PRE_IDS['empty'] or PRE_IDS['rock'])
 
     def __update_agent_pos(self, agent_i, move):
-
         curr_pos = copy.copy(self.agent_pos[agent_i])
         next_pos = None
 
         moves = {
             0: [curr_pos[0] - 1, curr_pos[1]],     # Observe
-            1: [curr_pos[0] - 1, curr_pos[1] - 1], # Observe left
-            2: [curr_pos[0] - 1, curr_pos[1] + 1], # Observe right
-
        
-            3: [curr_pos[0] - 1, curr_pos[1] - 1], # move left
-            4: [curr_pos[0] - 1, curr_pos[1] + 1], # move right
+            1: [curr_pos[0] - 1, curr_pos[1] - 1], # move left
+            2: [curr_pos[0] - 1, curr_pos[1] + 1], # move right
 
-            5: [curr_pos[0] - 1, curr_pos[1]],     # Charge
-            6: [curr_pos[0] - 1, curr_pos[1]],     # Dump no-op
+            3: [curr_pos[0] - 1, curr_pos[1]],     # Charge
+            4: [curr_pos[0] - 1, curr_pos[1]],     # Dump no-op
         }
 
         next_pos = moves[move]
 
-
         if next_pos is not None and self._is_cell_vacant(next_pos):
             self.agent_pos[agent_i] = next_pos
-            self.__update_resources(agent_i,move)
             self._full_obs[curr_pos[0]][curr_pos[1]] = PRE_IDS['empty']
+            self.__update_resources(agent_i,move)
+            self.update_agent_color([move])
             self.__update_agent_view(agent_i)
 
-
     def __update_resources(self,agent_i,action):
-        if(action == OBSERVE_ID or action == OBSERVE_LEFT_ID or action == OBSERVE_RIGHT_ID):
+        if(action == OBSERVE_ID):
             self.agent_memory[agent_i] += 1
             self.agent_observed[agent_i] += 1
             self.agent_battery[agent_i] -= 1
         if(action == LEFT_ID or action == RIGHT_ID):
             self.agent_battery[agent_i] -= 1
         if(action == DUMP_MEM_ID):
-            self.agent_battery[agent_i] = 3
-        if(action == CHARGE_ID):
             self.agent_memory[agent_i] = 0
+        if(action == CHARGE_ID):
+            self.agent_battery[agent_i] +=1
 
 
     def __update_agent_view(self, agent_i):
@@ -333,8 +303,7 @@ class Satellites2(gym.Env):
         Outputs  : number of neighbors
         Purpose  : This function is the visual of the "observation space" for each agent. This is done by putting all the squares surrounding the agent as a "neighbor" and acts like an extension of the agent. 
     """
-    def _neighbor_agents(self, pos): # this is really just the observable space 
-        
+    def _neighbor_agents(self, pos): # this is really just the observable space   
         _count = 0
         neighbors_xy = []
 
@@ -372,69 +341,87 @@ class Satellites2(gym.Env):
         return _count, agent_id
 
     def step(self, agents_action):
-        print("agents_action", agents_action)
-        self._step_count += 1
-        rewards = [0 for _ in range(self.n_agents)]
-        in_range = 0
-        _reward = 0
-        for rock_i in range(self.n_rocks):# find if any rocks are in data
-            rock_neighbour_count, n_i = self._neighbor_agents(self.rock_pos[rock_i])
-            if rock_neighbour_count == 1: in_range += 1
-        
-        if(in_range <= 0 and agents_action[0] <= 3):#can't choose to observe if there are no rocks in range end ep.
-            print("Invalid Move...")
-            _reward = -10
-            for agent_i in range(self.n_agents):
-                self.agent_memory[agent_i] += 1
-                rewards[agent_i] += _reward 
-
-        if(in_range >= 1 and agents_action[0] > 3): #reward -10 if it is in collection range but decides not to
-            _reward = -10
-            for agent_i in range(self.n_agents):
-                rewards[agent_i] += _reward 
-        
-        if(in_range >= 1 and agents_action[0] <= 3): #reward of 100 if they choose to observe when in data collection range
-            _reward = 100
-            for agent_i in range(self.n_agents):
-                rewards[agent_i] += _reward 
-
-        for agent_i in range(self.n_agents): #reward -10 if it doesn't choose to charge at 0 battery
-            if(self.agent_battery[agent_i] <= 0 and agents_action[0] != 6): 
-                _reward = -10
-            if(self.agent_memory[agent_i] >= 3 and agents_action[0] != 6):
-                _reward = -10
-            if(self.agent_battery[agent_i] <= 0 and agents_action[0] != 5): #reward -10 if battery/memory is depleted/full
-                _reward = -10
-            rewards[agent_i] += _reward 
-
-        
-        for agent_i, action in enumerate(agents_action):
-            if not (self._agent_dones[agent_i]):
-                print("agent_i is: {} and action is: {}".format(agent_i, action))
-                print("Resource Levels: MEMORY LEVEL: {}, OBSERVED LEVEL: {}, BATTERY LEVEL: {}".\
-                format(self.agent_memory[agent_i],self.agent_observed[agent_i],self.agent_battery[agent_i]))
-                self.__query_reset_path()
-                self.__update_agent_pos(agent_i, action)
-  
         if (self._step_count >= self._max_steps):
             for i in range(self.n_agents):
                 self._agent_dones[i] = True
 
+        rewards = [0 for _ in range(self.n_agents)]
+        in_range = 0
+        _reward = 0
+        
+        for agent_i in range(self.n_agents): #reward -10 if it doesn't choose to charge at 0 battery
+            if(self.agent_battery[agent_i] <= 0 and agents_action[0] != 4): 
+                _reward = -10.2
+            if(self.agent_memory[agent_i] >= 3 and agents_action[0] != 3):
+                _reward = -10.2
+            if(self.agent_battery[agent_i] <= 0 and agents_action[0] == 4):
+                _reward = 10.2
+                self.charging = True
+            if(self.agent_memory[agent_i] >= 3 and agents_action[0] == 3):
+                _reward = 10.2
+            rewards[agent_i] += _reward 
+
+        for rock_i in range(self.n_rocks):# find if any rocks are in data
+            rock_neighbor_count, n_i = self._neighbor_agents(self.rock_pos[rock_i])
+            neighbor_coords = self.__get_neighbor_coordinates(self.rock_pos[rock_i])
+            if rock_neighbor_count == 1: in_range += 1
+                
+        if(self.left_barrier == 0 and agents_action[0] == 1):
+            _reward = -10.2
+            agents_action = [4]
+        if(self.right_barrier == 0 and agents_action[0] == 2):
+            _reward = -10.2
+            agents_action = [4]
+
+        if(in_range <= 0 and agents_action[0] == 0 ):#can't choose to observe if there are no rocks in range end ep.
+            _reward = -10.2
+            for agent_i in range(self.n_agents):
+                self.agent_memory[agent_i] += 1
+                rewards[agent_i] += _reward 
+        
+
+        if(in_range >= 1 and agents_action[0] != 0): #reward -10 if it is in collection range but decides not to
+            _reward = -10.2
+            for agent_i in range(self.n_agents):
+                rewards[agent_i] += _reward 
+        
+        if(in_range >= 1 and agents_action[0] == 0): #reward of 100 if they choose to observe when in data collection range
+            _reward = 100.5 # div by maximum
+            self.observation_cntr += 1
+            for agent_i in range(self.n_agents):
+                rewards[agent_i] += _reward 
+   
+        for agent_i, action in enumerate(agents_action):
+            if not (self._agent_dones[agent_i]):
+                # print("agent_i is: {} and action is: {}".format(agent_i, action))
+                # print("Resource Levels: MEMORY LEVEL: {}, OBSERVED LEVEL: {}, BATTERY LEVEL: {}".\
+                # format(self.agent_memory[agent_i],self.agent_observed[agent_i],self.agent_battery[agent_i]))
+                self.__query_reset_path()
+                self.__update_agent_pos(agent_i, action)
+
         for i in range(self.n_agents):
             self._total_episode_reward[i] += rewards[i]
 
-
+        self._step_count += 1
+        
+        if(agents_action[0] == 1):
+            self.left_barrier -= 1
+            self.right_barrier += 1
+        if(agents_action[0] == 2):
+            self.right_barrier -= 1
+            self.left_barrier += 1
+        
         # print("Rewards: ",rewards)
 
-        return self.get_agent_obs(), rewards, self._agent_dones, {'filler': self._num_rocks_found}
+        return self.get_agent_obs(), rewards, self._agent_dones, self.observation_cntr
 
     def __query_reset_path(self): #respawn agent once it hits bottom
         for agent_i in range(self.n_agents):
             init_pos = copy.copy(self._init_agent_pos)
             next_pos = None
             if(self.agent_pos[0][0] == 0):
-                next_pos = [init_pos[0], init_pos[1] + 3]     
-                print("reset {}".format(next_pos))                   
+                next_pos = [init_pos[0], init_pos[1] + 2]     #maybe change this movement
+                # print("reset {}".format(next_pos))                   
                 if next_pos is not None and self._is_cell_vacant(next_pos):
                     self.agent_pos[agent_i] = next_pos
                     self._full_obs[init_pos[0]][init_pos[1]] = PRE_IDS['empty']
@@ -472,17 +459,17 @@ class Satellites2(gym.Env):
         #visual render for the observable area of the satellite
         for agent_i in range(self.n_agents):
             for neighbor in self.__get_neighbor_coordinates(self.agent_pos[agent_i]):
-                fill_cell(img, neighbor, cell_size=CELL_SIZE, fill=OBSERVATION_VISUAL_COLOR, margin=0.1)
-            fill_cell(img, self.agent_pos[agent_i], cell_size=CELL_SIZE, fill=OBSERVATION_VISUAL_COLOR, margin=0.1)
+                fill_cell(img, neighbor, cell_size=CELL_SIZE, fill=self.OBSERVATION_VISUAL_COLOR, margin=0.1)
+            fill_cell(img, self.agent_pos[agent_i], cell_size=CELL_SIZE, fill=self.OBSERVATION_VISUAL_COLOR, margin=0.1)
 
         #agent visual
         for agent_i in range(self.n_agents):
-            draw_circle(img, self.agent_pos[agent_i], cell_size=CELL_SIZE, fill=AGENT_COLOR)
+            draw_circle(img, self.agent_pos[agent_i], cell_size=CELL_SIZE, fill=self.AGENT_COLOR)
             write_cell_text(img, text=str(agent_i + 1), pos=self.agent_pos[agent_i], cell_size=CELL_SIZE,
                             fill='white', margin=0.4)
         #rock visual
         for rock_i in range(self.n_rocks):
-            draw_circle(img, self.rock_pos[rock_i], cell_size=CELL_SIZE, fill=ROCK_COLOR)   
+            draw_circle(img, self.rock_pos[rock_i], cell_size=CELL_SIZE, fill=self.ROCK_COLOR)   
             write_cell_text(img, text=str(rock_i + 1), pos=self.rock_pos[rock_i], cell_size=CELL_SIZE,
                             fill='white', margin=0.4)
 
@@ -504,118 +491,100 @@ class Satellites2(gym.Env):
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
-            
-    def replace_target_network(self):
-        if self.learn_step_counter % self.replace_target_cnt == 0:
-            self.q_next.load_state_dict(self.q_eval.state_dict())
+
+    def update_agent_color(self,action):
+        action = action[0]
+        if(action == OBSERVE_ID):
+            self.AGENT_COLOR = ImageColor.getcolor("purple", mode='RGB')
+            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("purple", mode='RGB')
+        if(action == LEFT_ID):
+            self.AGENT_COLOR = ImageColor.getcolor("red", mode='RGB')
+            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("red", mode='RGB')
+        if(action == RIGHT_ID):
+            self.AGENT_COLOR = ImageColor.getcolor("blue", mode='RGB')
+            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("blue", mode='RGB')
+        if(action == DUMP_MEM_ID):
+            self.AGENT_COLOR = ImageColor.getcolor("black", mode='RGB')
+            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("black", mode='RGB')
+        if(action == CHARGE_ID):
+            self.AGENT_COLOR = ImageColor.getcolor("green", mode='RGB')
+            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("green", mode='RGB')
             
     def save_models(self):
         self.q_eval.save_checkpoint()
-        self.q_next.save_checkpoint()
+        # self.q_next.save_checkpoint()
 
     def load_models(self):
         self.q_eval.load_checkpoint()
-        self.q_next.load_checkpoint()
+        # self.q_next.load_checkpoint()
 
     def remember(self, state, action, reward, new_state, done):
         self.memory.store_transition(state, action, reward, new_state, done)
 
-    def choose_action(self, observation, evaluate=False): #e-greedy action selection
-        # for agent_i in range (self.n_agents):
-        #     if np.random.random() > self.epsilon:
-        #         state_i = T.tensor(observation[agent_i],dtype=T.float).to(self.q_eval.device)
-        #         actions = self.q_eval.forward(state_i)
-        #         action = T.argmax(actions).item()
-        #     else:
-        #         action = self.sample_action_space()
-        #     print("Action",action)
-        #     return action
-        # return None
+    def choose_action(self, observation, evaluate=False): #epsilon-greedy action selection
         if np.random.random() > self.epsilon:
-            print("randomsthistetjewoi")
             state_i = T.tensor(observation[0],dtype=T.float).to(self.q_eval.device)
             actions = self.q_eval.forward(state_i)
-            action = T.argmax(actions).item()
+            action = T.argmax(actions).item() # π∗(s) = argamax​ Q∗(s,a)
             action = [action]
         else:
             action = self.sample_action_space()
-        print("Action",action)
         return action
 
     def decrement_epsilon(self):
         self.epsilon = self.epsilon - self.eps_dec \
                         if self.epsilon > self.eps_min else self.eps_min
     def learn(self):
+
         if self.memory.mem_cntr < self.batch_size:
             return
 
         self.q_eval.optimizer.zero_grad()
 
         state, action, reward, new_state, done, batch = \
-                                self.memory.sample_buffer(self.batch_size)
-        
-        # using T.Tensor seems to reset datatype to float
-        # using T.tensor preserves source data type
+                                self.memory.sample_buffer(self.batch_size) # sample batch from experience
+
         state = T.tensor(state).to(self.q_eval.device)
         new_state = T.tensor(new_state).to(self.q_eval.device)
         action = action
         rewards = T.tensor(reward).to(self.q_eval.device)
         dones = T.tensor(done).to(self.q_eval.device)
-        # state = T.squeeze(state)
-        # new_state = T.squeeze(new_state)
+        batch_index = np.arange(self.batch_size, dtype=np.int32)
 
-        # print("state shape",state.shape)
-        # print("new state shape",new_state.shape)
-        # print("action shape",action)
-        q_eval = self.q_eval.forward(state)[batch,action]
-        q_next = self.q_eval.forward(new_state)
-        q_next[dones] = 0
-        # print("q_eval",q_eval)
-        # print("q_next",q_next.shape)
-  
+        q_eval = self.q_eval.forward(state)[batch_index,action] #Q_t
+        q_next = self.q_eval.forward(new_state)  # Q_t+1
+        q_next[dones] = 0.0
 
-        q_target = rewards + self.gamma*T.max(q_next, dim=1)[0]
-        # print("q_target",q_target)
+        q_target = rewards + self.gamma*T.max(q_next, dim=1)[0] # Qπ(s,a) = r + γQπ(s′,π(s′))
+        q_target = q_target.float() # turn to float to match datatypes of all tensors
 
 
-        loss = self.q_eval.loss(q_target, q_eval).to(self.q_eval.device)
-        # print("loss dtype",loss.dtype)
-        # print("q_eval dtype", q_eval.dtype)
-        # print("q_next dtype", q_next.dtype)
-        # print("q_target dtype", q_target.dtype)
-        # print("loss",loss)
+        loss = self.q_eval.loss(q_target, q_eval).to(self.q_eval.device) # Mean Squared Error Loss
         loss.backward()
         
         self.q_eval.optimizer.step()
 
         self.iter_cntr += 1
         self.epsilon = self.epsilon - self.eps_dec \
-            if self.epsilon > self.eps_min else self.eps_min
+            if self.epsilon > self.eps_min else self.eps_min #explore vs exploit
 
 
 logger = logging.getLogger(__name__)
 
-AGENT_COLOR = ImageColor.getcolor('blue', mode='RGB')
-OBSERVATION_VISUAL_COLOR = (186, 238, 247)
-ROCK_COLOR = 'orange'
-
 CELL_SIZE = 35
-
 WALL_COLOR = 'black'
 
 ACTION_MEANING = {
-    0: "O",
-    1: "OL",
-    2: "OR",
+    0: "O", # Make purple
 
-    3: "L",
-    4: "R",
+    1: "L", # Make yellow
+    2: "R", # Make orange
 
-    5: "D",
-    6: "C",
-
+    3: "D", # Make black
+    4: "C", # Make green
 }
 
+#sep. actions for observing and slewing 
 PRE_IDS = {
     'agent': 'A',
     'rock': 'P',
@@ -623,12 +592,8 @@ PRE_IDS = {
     'empty': '0'
 }
 
-
-
 OBSERVE_ID = 0
-OBSERVE_LEFT_ID = 1
-OBSERVE_RIGHT_ID = 2 
-LEFT_ID = 3
-RIGHT_ID = 4
-DUMP_MEM_ID = 5
-CHARGE_ID = 6
+LEFT_ID = 1
+RIGHT_ID = 2
+DUMP_MEM_ID = 3
+CHARGE_ID = 4

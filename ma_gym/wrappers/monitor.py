@@ -106,10 +106,10 @@ def clear_monitor_files(training_dir):
 
 
 def capped_cubic_video_schedule(episode_id):
-    if episode_id < 1000:
+    if episode_id < 2000:
         return int(round(episode_id ** (1. / 3))) ** 3 == episode_id
     else:
-        return episode_id % 1000 == 0
+        return episode_id % 2000 == 0
 
 
 def disable_videos(episode_id):
