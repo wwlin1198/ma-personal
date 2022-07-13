@@ -9,7 +9,7 @@ from PIL import ImageColor
 from gym import spaces
 from gym.utils import seeding
 from ..utils.action_space import MultiAgentActionSpace
-from ..utils.draw import draw_grid, fill_cell, draw_circle, write_cell_text
+from ..utils.draw import draw_grid, fill_cell, draw_circle, write_cell_text, draw_score_board
 from ..utils.observation_space import MultiAgentObservationSpace
 from ..utils.replay_buffer import ReplayBuffer
 from ..utils.deep_q_network import DeepQNetwork
@@ -106,13 +106,15 @@ class Satellites2(gym.Env):
                                    fc1_dims=512, fc2_dims=512)
         ###########  For DQN Networks ############
 
-        self._grid_shape = grid_shape
+        self._base_grid_shape = grid_shape
+        self._agent_grid_shape = agent_view_mask
         self.n_agents = n_agents
         self.n_rocks = n_rocks
         self._max_steps = max_steps
         self._step_count = None
         self._agent_view_mask = agent_view_mask
-        self.charging = False
+        self.agent_reward = 0
+        self.agent_action = None
 
         self.left_barrier = 1
         self.right_barrier = 1
@@ -120,6 +122,8 @@ class Satellites2(gym.Env):
         self.AGENT_COLOR = ImageColor.getcolor("gray", mode='RGB')
         self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("gray", mode='RGB')
         self.ROCK_COLOR = ImageColor.getcolor("orange", mode='RGB')
+        self.BATTERY_COLOR = ImageColor.getcolor("green", mode='RGB')
+        self.MEMORY_COLOR = ImageColor.getcolor("red", mode='RGB')
 
         self._init_agent_pos = {_: None for _ in range(self.n_agents)}
 
@@ -165,14 +169,14 @@ class Satellites2(gym.Env):
         else:
             return [[ACTION_MEANING[i] for i in range(ac.n)] for ac in self.action_space]
 
-    def sample_action_space(self): # only for eps-greedy action selection  
+    def sample_action_space(self): # only for eps-greedy action  
         return [agent_action_space.sample() for agent_action_space in self.action_space]
 
     def __draw_base_img(self): # draws empty grid
-        self._base_img = draw_grid(self._grid_shape[0], self._grid_shape[1], cell_size=CELL_SIZE, fill='white')
+        self._base_img = draw_grid(self._base_grid_shape[0], self._base_grid_shape[1], cell_size=CELL_SIZE, fill='white')
 
     def __create_grid(self):
-        _grid = [[PRE_IDS['empty'] for _ in range(self._grid_shape[1])] for row in range(self._grid_shape[0])]
+        _grid = [[PRE_IDS['empty'] for _ in range(self._base_grid_shape[1])] for row in range(self._base_grid_shape[0])]
         return _grid
 
     def __init_map(self):
@@ -185,7 +189,7 @@ class Satellites2(gym.Env):
             while True:
                 # pos = [self.np_random.randint(0, self._grid_shape[0] - 1), #for multiple agents
                 # self.np_random.randint(0, self._grid_shape[1] - 1)]
-                pos = [self._grid_shape[0] - 2,1] #for one agent
+                pos = [self._agent_grid_shape[0] - 2,1] #for one agent
                 if self._is_cell_vacant(pos):
                     self.agent_pos[agent_i] = pos
                     self._init_agent_pos = pos
@@ -194,8 +198,8 @@ class Satellites2(gym.Env):
      
         for rock_i in range(self.n_rocks):
             while True:
-                pos = [self.np_random.randint(2, self._grid_shape[0] - 1), #leave space for satellite to respawn
-                    self.np_random.randint(2, self._grid_shape[1] - 1)]
+                pos = [self.np_random.randint(2, self._agent_grid_shape[0] - 1), #leave space for satellite to respawn
+                    self.np_random.randint(2, self._agent_grid_shape[1] - 1)]
                 # if self._is_cell_vacant(pos) and (self._neighbor_agents(pos)[0] == 0 and pos[1] % 3 == 0):#dont spawn same place as agent
                 self.rock_pos[rock_i] = pos
                 break
@@ -216,12 +220,12 @@ class Satellites2(gym.Env):
             battery_level = self.agent_battery[agent_i]
             memory_level = self.agent_memory[agent_i]
 
-            _agent_i_obs = [pos[0] / (self._grid_shape[0] - 1), pos[1] / (self._grid_shape[1] - 1)]  #coordinate of agent
+            _agent_i_obs = [pos[0] / (self._agent_grid_shape[0] - 1), pos[1] / (self._agent_grid_shape[1] - 1)]  #coordinate of agent
 
             # check if rock is in the view area and give it future (time+1) rock coordinates
             _rock_pos = np.zeros(self._agent_view_mask)  # rock location in neighbor
-            for row in range(max(0, pos[0] - 2), min(pos[0] + 2 + 1, self._grid_shape[0])):
-                for col in range(max(0, pos[1] - 2), min(pos[1] + 2 + 1, self._grid_shape[1])):
+            for row in range(max(0, pos[0] - 2), min(pos[0] + 2 + 1, self._agent_grid_shape[0] - 2)):
+                for col in range(max(0, pos[1] - 2), min(pos[1] + 2 + 1, self._agent_grid_shape[1] - 2)):
                     if PRE_IDS['rock'] in self._full_obs[row][col]:
                         _rock_pos[row - (pos[0] - 2), col - (pos[1] - 2)] = 1  # get relative position for the rock loc.
                         # print("Observation space \n {}".format(_rock_pos))
@@ -243,6 +247,7 @@ class Satellites2(gym.Env):
         self.agent_pos = {}
         self.rock_pos = {}
         self.observation_cntr = 0
+        self.agent_reward = 0
 
         self.__init_map()
         self._step_count = 0
@@ -251,7 +256,7 @@ class Satellites2(gym.Env):
         return self.get_agent_obs()
 
     def is_valid(self, pos):
-        return (0 <= pos[0] < self._grid_shape[0]) and (0 <= pos[1] < self._grid_shape[1])
+        return (0 <= pos[0] < self._agent_grid_shape[0]) and (0 <= pos[1] < self._agent_grid_shape[1])
 
     def _is_cell_vacant(self, pos):
         return self.is_valid(pos) and (self._full_obs[pos[0]][pos[1]] == PRE_IDS['empty'] or PRE_IDS['rock'])
@@ -286,10 +291,13 @@ class Satellites2(gym.Env):
             self.agent_battery[agent_i] -= 1
         if(action == LEFT_ID or action == RIGHT_ID):
             self.agent_battery[agent_i] -= 1
-        if(action == DUMP_MEM_ID):
+        if(action == DLINK_MEM_ID):
             self.agent_memory[agent_i] = 0
         if(action == CHARGE_ID):
-            self.agent_battery[agent_i] +=1
+            if(self.agent_battery[agent_i] == 3):
+                self.agent_battery[agent_i] += 0
+            else:
+                self.agent_battery[agent_i] +=1
 
 
     def __update_agent_view(self, agent_i):
@@ -352,18 +360,18 @@ class Satellites2(gym.Env):
         for agent_i in range(self.n_agents): #reward -10 if it doesn't choose to charge at 0 battery
             if(self.agent_battery[agent_i] <= 0 and agents_action[0] != 4): 
                 _reward = -10.2
+                agents_action = [4] #force to charge when battery at 0
             if(self.agent_memory[agent_i] >= 3 and agents_action[0] != 3):
                 _reward = -10.2
+                agents_action = [3] #force to pick downlink
             if(self.agent_battery[agent_i] <= 0 and agents_action[0] == 4):
                 _reward = 10.2
-                self.charging = True
             if(self.agent_memory[agent_i] >= 3 and agents_action[0] == 3):
                 _reward = 10.2
             rewards[agent_i] += _reward 
 
         for rock_i in range(self.n_rocks):# find if any rocks are in data
             rock_neighbor_count, n_i = self._neighbor_agents(self.rock_pos[rock_i])
-            neighbor_coords = self.__get_neighbor_coordinates(self.rock_pos[rock_i])
             if rock_neighbor_count == 1: in_range += 1
                 
         if(self.left_barrier == 0 and agents_action[0] == 1):
@@ -374,7 +382,7 @@ class Satellites2(gym.Env):
             agents_action = [4]
 
         if(in_range <= 0 and agents_action[0] == 0 ):#can't choose to observe if there are no rocks in range end ep.
-            _reward = -10.2
+            _reward = -50.2
             for agent_i in range(self.n_agents):
                 self.agent_memory[agent_i] += 1
                 rewards[agent_i] += _reward 
@@ -412,7 +420,8 @@ class Satellites2(gym.Env):
             self.left_barrier += 1
         
         # print("Rewards: ",rewards)
-
+        self.agent_reward = rewards[0]
+        self.agent_action = agents_action[0]
         return self.get_agent_obs(), rewards, self._agent_dones, self.observation_cntr
 
     def __query_reset_path(self): #respawn agent once it hits bottom
@@ -420,7 +429,7 @@ class Satellites2(gym.Env):
             init_pos = copy.copy(self._init_agent_pos)
             next_pos = None
             if(self.agent_pos[0][0] == 0):
-                next_pos = [init_pos[0], init_pos[1] + 2]     #maybe change this movement
+                next_pos = [init_pos[0], init_pos[1] + 3]     #maybe change this movement
                 # print("reset {}".format(next_pos))                   
                 if next_pos is not None and self._is_cell_vacant(next_pos):
                     self.agent_pos[agent_i] = next_pos
@@ -454,8 +463,9 @@ class Satellites2(gym.Env):
         return neighbors
 
     def render(self, mode='human'): #renders the entire grid world as one frame
+        
         img = copy.copy(self._base_img)
-
+        
         #visual render for the observable area of the satellite
         for agent_i in range(self.n_agents):
             for neighbor in self.__get_neighbor_coordinates(self.agent_pos[agent_i]):
@@ -472,7 +482,8 @@ class Satellites2(gym.Env):
             draw_circle(img, self.rock_pos[rock_i], cell_size=CELL_SIZE, fill=self.ROCK_COLOR)   
             write_cell_text(img, text=str(rock_i + 1), pos=self.rock_pos[rock_i], cell_size=CELL_SIZE,
                             fill='white', margin=0.4)
-
+        
+        img = draw_score_board(img,[self.agent_battery[0],self.agent_memory[0],self.observation_cntr,self.agent_reward,self.agent_action])
         img = np.asarray(img)
         if mode == 'rgb_array':
             return img
@@ -503,7 +514,7 @@ class Satellites2(gym.Env):
         if(action == RIGHT_ID):
             self.AGENT_COLOR = ImageColor.getcolor("blue", mode='RGB')
             self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("blue", mode='RGB')
-        if(action == DUMP_MEM_ID):
+        if(action == DLINK_MEM_ID):
             self.AGENT_COLOR = ImageColor.getcolor("black", mode='RGB')
             self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("black", mode='RGB')
         if(action == CHARGE_ID):
@@ -595,5 +606,5 @@ PRE_IDS = {
 OBSERVE_ID = 0
 LEFT_ID = 1
 RIGHT_ID = 2
-DUMP_MEM_ID = 3
+DLINK_MEM_ID = 3
 CHARGE_ID = 4

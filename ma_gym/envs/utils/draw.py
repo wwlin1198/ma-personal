@@ -75,18 +75,6 @@ def fill_cell(image, pos, cell_size=None, fill='black', margin=0):
     x, y, x_dash, y_dash = row + margin_x, col + margin_y, row + cell_size_x - margin_x, col + cell_size_y - margin_y
     ImageDraw.Draw(image).rectangle([(x, y), (x_dash, y_dash)], fill=fill)
 
-
-def write_cell_text(image, text, pos, cell_size=None, fill='black', margin=0):
-    assert cell_size is not None and 0 <= margin <= 1
-
-    cell_size_x, cell_size_y = get_cell_sizes(cell_size)
-    col, row = pos
-    row, col = row * cell_size_x, col * cell_size_y
-    margin_x, margin_y = margin * cell_size_x, margin * cell_size_y
-    x, y = row + margin_x, col + margin_y
-    ImageDraw.Draw(image).text((x, y), text=text, fill=fill)
-
-
 def draw_cell_outline(image, pos, cell_size=50, fill='black'):
     cell_size_x, cell_size_y = get_cell_sizes(cell_size)
     col, row = pos
@@ -110,12 +98,34 @@ def draw_border(image, border_width=1, fill='black'):
     new_im.paste(image, (border_width, border_width))
     return new_im
 
+def write_cell_text(image, text, pos, cell_size=None, fill='black', margin=0):
+    assert cell_size is not None and 0 <= margin <= 1
+
+    cell_size_x, cell_size_y = get_cell_sizes(cell_size)
+    col, row = pos
+    row, col = row * cell_size_x, col * cell_size_y
+    margin_x, margin_y = margin * cell_size_x, margin * cell_size_y
+    x, y = row + margin_x, col + margin_y
+    ImageDraw.Draw(image).text((x, y), text=text, fill=fill)
 
 def draw_score_board(image, score, board_height=30):
     im_width, im_height = image.size
     new_im = Image.new("RGB", size=(im_width, im_height + board_height), color='#e1e4e8')
     new_im.paste(image, (0, board_height))
+    
+    action = ""
+    if(score[4] == 0):
+        action = "Observe"
+    if(score[4] == 1):
+        action = "Left"
+    if(score[4] == 2):
+        action = "Right"
+    if(score[4] == 3):
+        action = "Downlink"
+    if(score[4] == 4):
+        action = "Charge"
 
-    _text = ', '.join([str(round(x, 2)) for x in score])
+    _text = "Agent Battery: {}, Agent Memory {}, Observation Counter: {}, Reward: {}, Action: {}".\
+            format(score[0],score[1],score[2],score[3],action)
     ImageDraw.Draw(new_im).text((10, board_height // 3), text=_text, fill='black')
     return new_im
