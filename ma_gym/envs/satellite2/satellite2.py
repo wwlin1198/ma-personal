@@ -69,7 +69,7 @@ class Satellites2(gym.Env):
 
     metadata = {'render.modes': ['human', 'rgb_array']} #must be human so it is readable data by humans
 
-    def __init__(self, grid_shape=(20, 20), n_agents=1, n_rocks=10, full_observable=False, max_steps=200, 
+    def __init__(self, grid_shape=(20, 20), n_agents=1, n_rocks=10, n_pRocks = 4, full_observable=False, max_steps=200, 
                  agent_view_mask=(20, 20)):
         ############# PARAMS #################
         self.alpha          = 0.001 
@@ -110,6 +110,7 @@ class Satellites2(gym.Env):
         self._agent_grid_shape = agent_view_mask
         self.n_agents = n_agents
         self.n_rocks = n_rocks
+        self.n_pRocks = n_pRocks #priority rocks
         self._max_steps = max_steps
         self._step_count = None
         self._agent_view_mask = agent_view_mask
@@ -122,8 +123,7 @@ class Satellites2(gym.Env):
         self.AGENT_COLOR = ImageColor.getcolor("gray", mode='RGB')
         self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("gray", mode='RGB')
         self.ROCK_COLOR = ImageColor.getcolor("orange", mode='RGB')
-        self.BATTERY_COLOR = ImageColor.getcolor("green", mode='RGB')
-        self.MEMORY_COLOR = ImageColor.getcolor("red", mode='RGB')
+        self.PRIO_ROCK_COLOR = ImageColor.getcolor("red", mode='RGB')
 
         self._init_agent_pos = {_: None for _ in range(self.n_agents)}
 
@@ -131,6 +131,7 @@ class Satellites2(gym.Env):
 
         self.agent_pos = {_: None for _ in range(self.n_agents)}
         self.rocks_pos = {_: None for _ in range(self.n_rocks)}
+        self.pRock_pos = {_: None for _ in range(self.n_pRocks)}
 
         self.agent_battery = {_: None for _ in range(self.n_agents)}
         self.agent_memory =  {_: None for _ in range(self.n_agents)}
@@ -200,10 +201,17 @@ class Satellites2(gym.Env):
             while True:
                 pos = [self.np_random.randint(2, self._agent_grid_shape[0] - 1), #leave space for satellite to respawn
                     self.np_random.randint(2, self._agent_grid_shape[1] - 1)]
-                # if self._is_cell_vacant(pos) and (self._neighbor_agents(pos)[0] == 0 and pos[1] % 3 == 0):#dont spawn same place as agent
                 self.rock_pos[rock_i] = pos
                 break
             self.__update_rock_view(rock_i)
+
+        for pRock_i in range(self.n_pRocks):
+            while True:
+                pos = [self.np_random.randint(2, self._agent_grid_shape[0] - 1), #leave space for satellite to respawn
+                    self.np_random.randint(2, self._agent_grid_shape[1] - 1)]
+                self.pRock_pos[pRock_i] = pos
+                break
+            self.__update_prio_rock_view(pRock_i)
 
         self.__draw_base_img()
     """
@@ -226,7 +234,7 @@ class Satellites2(gym.Env):
             _rock_pos = np.zeros(self._agent_view_mask)  # rock location in neighbor
             for row in range(max(0, pos[0] - 2), min(pos[0] + 2 + 1, self._agent_grid_shape[0] - 2)):
                 for col in range(max(0, pos[1] - 2), min(pos[1] + 2 + 1, self._agent_grid_shape[1] - 2)):
-                    if PRE_IDS['rock'] in self._full_obs[row][col]:
+                    if PRE_IDS['rock'] in self._full_obs[row][col] or PRE_IDS['pRock'] in self._full_obs[row][col]:
                         _rock_pos[row - (pos[0] - 2), col - (pos[1] - 2)] = 1  # get relative position for the rock loc.
                         # print("Observation space \n {}".format(_rock_pos))
             _agent_i_obs += _rock_pos.flatten().tolist()  # adding rock pos in observable area
@@ -281,8 +289,9 @@ class Satellites2(gym.Env):
             self.agent_pos[agent_i] = next_pos
             self._full_obs[curr_pos[0]][curr_pos[1]] = PRE_IDS['empty']
             self.__update_resources(agent_i,move)
-            self.update_agent_color([move])
+   
             self.__update_agent_view(agent_i)
+            self.update_agent_color([move])
 
     def __update_resources(self,agent_i,action):
         if(action == OBSERVE_ID):
@@ -305,6 +314,9 @@ class Satellites2(gym.Env):
 
     def __update_rock_view(self, rock_i):
         self._full_obs[self.rock_pos[rock_i][0]][self.rock_pos[rock_i][1]] = PRE_IDS['rock'] + str(rock_i + 1)
+
+    def __update_prio_rock_view(self, pRock_i):
+        self._full_obs[self.pRock_pos[pRock_i][0]][self.pRock_pos[pRock_i][1]] = PRE_IDS['pRock'] + str(pRock_i + 1)
     """
         Function : _neighbor_agents
         Inputs   : pos
@@ -355,6 +367,7 @@ class Satellites2(gym.Env):
 
         rewards = [0 for _ in range(self.n_agents)]
         in_range = 0
+        p_in_range = 0
         _reward = 0
         
         for agent_i in range(self.n_agents): #reward -10 if it doesn't choose to charge at 0 battery
@@ -373,6 +386,10 @@ class Satellites2(gym.Env):
         for rock_i in range(self.n_rocks):# find if any rocks are in data
             rock_neighbor_count, n_i = self._neighbor_agents(self.rock_pos[rock_i])
             if rock_neighbor_count == 1: in_range += 1
+
+        for pRock_i in range(self.n_pRocks):# find if any rocks are in data
+            pRock_neighbor_count, n_i = self._neighbor_agents(self.pRock_pos[pRock_i])
+            if pRock_neighbor_count == 1: p_in_range += 1
                 
         if(self.left_barrier == 0 and agents_action[0] == 1):
             _reward = -10.2
@@ -381,20 +398,21 @@ class Satellites2(gym.Env):
             _reward = -10.2
             agents_action = [4]
 
-        if(in_range <= 0 and agents_action[0] == 0 ):#can't choose to observe if there are no rocks in range end ep.
+        if(in_range <= 0 or p_in_range <= 0 and agents_action[0] == 0 ):#can't choose to observe if there are no rocks in range end ep.
             _reward = -50.2
             for agent_i in range(self.n_agents):
                 self.agent_memory[agent_i] += 1
                 rewards[agent_i] += _reward 
         
 
-        if(in_range >= 1 and agents_action[0] != 0): #reward -10 if it is in collection range but decides not to
+        if(in_range >= 1 or p_in_range >= 1 and agents_action[0] != 0): #reward -10 if it is in collection range but decides not to
             _reward = -10.2
             for agent_i in range(self.n_agents):
                 rewards[agent_i] += _reward 
         
-        if(in_range >= 1 and agents_action[0] == 0): #reward of 100 if they choose to observe when in data collection range
-            _reward = 100.5 # div by maximum
+        if(in_range >= 1 or p_in_range >= 1 and agents_action[0] == 0): #reward of 100 if they choose to observe when in data collection range
+            if in_range >=1 :_reward += 100.5 # div by maximum
+            if p_in_range >=1 :_reward += 200.5 
             self.observation_cntr += 1
             for agent_i in range(self.n_agents):
                 rewards[agent_i] += _reward 
@@ -482,7 +500,12 @@ class Satellites2(gym.Env):
             draw_circle(img, self.rock_pos[rock_i], cell_size=CELL_SIZE, fill=self.ROCK_COLOR)   
             write_cell_text(img, text=str(rock_i + 1), pos=self.rock_pos[rock_i], cell_size=CELL_SIZE,
                             fill='white', margin=0.4)
-        
+
+        for pRock_i in range(self.n_pRocks):
+            draw_circle(img, self.pRock_pos[pRock_i], cell_size=CELL_SIZE, fill=self.PRIO_ROCK_COLOR)   
+            write_cell_text(img, text=str(pRock_i + 1), pos=self.pRock_pos[pRock_i], cell_size=CELL_SIZE,
+                            fill='white', margin=0.4)
+
         img = draw_score_board(img,[self.agent_battery[0],self.agent_memory[0],self.observation_cntr,self.agent_reward,self.agent_action])
         img = np.asarray(img)
         if mode == 'rgb_array':
@@ -512,8 +535,8 @@ class Satellites2(gym.Env):
             self.AGENT_COLOR = ImageColor.getcolor("red", mode='RGB')
             self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("red", mode='RGB')
         if(action == RIGHT_ID):
-            self.AGENT_COLOR = ImageColor.getcolor("blue", mode='RGB')
-            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("blue", mode='RGB')
+            self.AGENT_COLOR = ImageColor.getcolor("orange", mode='RGB')
+            self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("orange", mode='RGB')
         if(action == DLINK_MEM_ID):
             self.AGENT_COLOR = ImageColor.getcolor("black", mode='RGB')
             self.OBSERVATION_VISUAL_COLOR = ImageColor.getcolor("black", mode='RGB')
@@ -599,6 +622,7 @@ ACTION_MEANING = {
 PRE_IDS = {
     'agent': 'A',
     'rock': 'P',
+    'pRock': 'N',
     'wall': 'W',
     'empty': '0'
 }

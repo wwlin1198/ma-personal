@@ -48,7 +48,7 @@ if __name__ == '__main__':
         while not all(done_n):
 
             action = env.choose_action(observation, evaluate)
-            # print("Action type", action)
+            print("Action type", action)
             observation_, reward, done_n, info = env.step(action)
             score += sum(reward)
 

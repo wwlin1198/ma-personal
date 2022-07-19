@@ -112,7 +112,7 @@ def draw_score_board(image, score, board_height=30):
     im_width, im_height = image.size
     new_im = Image.new("RGB", size=(im_width, im_height + board_height), color='#e1e4e8')
     new_im.paste(image, (0, board_height))
-    
+
     action = ""
     if(score[4] == 0):
         action = "Observe"
@@ -125,7 +125,7 @@ def draw_score_board(image, score, board_height=30):
     if(score[4] == 4):
         action = "Charge"
 
-    _text = "Agent Battery: {}, Agent Memory {}, Observation Counter: {}, Reward: {}, Action: {}".\
+    _text = "Agent Battery: {}, Agent Memory {}, Observation Counter: {}, Total Reward: {}, Action: {}".\
             format(score[0],score[1],score[2],score[3],action)
     ImageDraw.Draw(new_im).text((10, board_height // 3), text=_text, fill='black')
     return new_im
