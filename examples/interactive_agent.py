@@ -6,7 +6,7 @@ from ma_gym.wrappers import Monitor
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Interactive Agent for ma-gym')
-    parser.add_argument('--env', default='Satellite2-v0',
+    parser.add_argument('--env', default='Satellite-v0',
                         help='Name of the environment (default: %(default)s)')
     parser.add_argument('--episodes', type=int, default=1,
                         help='episodes (default: %(default)s)')

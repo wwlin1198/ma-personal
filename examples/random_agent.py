@@ -9,7 +9,7 @@ from ma_gym.envs.utils.plot import plotLearning
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Random env for ma-gym')
-    parser.add_argument('--env', default='Satellite2-v0',
+    parser.add_argument('--env', default='Satellite-v0',
                         help='Name of the environment (default: %(default)s)')
     parser.add_argument('--episodes', type=int, default=10,
                         help='episodes (default: %(default)s)')
@@ -25,7 +25,7 @@ if __name__ == '__main__':
     best_score = -np.inf
     score_history = []
     obs_score_history = []
-    load_checkpoint = False
+    load_checkpoint = False     
     eps_history = []
     if load_checkpoint:
         n_steps = 0
