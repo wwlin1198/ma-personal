@@ -3,8 +3,9 @@ https://github.com/koulanurag/ma-gym
 
 Using ma-gym, a satellite environment is created in ma_gym/envs/satellite/satellite.py
 
+Using DQN to program a satellite to make decisions for scientific data collection. 
 
-Running
+Run
 =========
 1. Go to examples folder
 2. To run the DQN, run random_agent.py 
