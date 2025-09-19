@@ -5,6 +5,8 @@ Using ma-gym, a satellite environment is created in ma_gym/envs/satellite/satell
 
 Using DQN to program a satellite to make decisions for scientific data collection. 
 
+Internship Project at NASA.
+
 Run
 =========
 1. Go to examples folder
